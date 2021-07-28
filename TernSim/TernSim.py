@@ -11,23 +11,20 @@ import os
 from parcels import (FieldSet, ParticleSet, JITParticle, ErrorCode, Variable)
 from netCDF4 import Dataset, num2date
 from datetime import timedelta, datetime
+from sys import argv
 
 ##############################################################################
 # DIRECTORIES & PARAMETERS                                                   #
 ##############################################################################
 
-dirs  = {'script': os.path.dirname(os.path.realpath(__file__)),
-         'model': os.path.dirname(os.path.realpath(__file__)) + '/MODEL_DATA/',
-         'traj': os.path.dirname(os.path.realpath(__file__)) + '/TRAJ_DATA/'}
-
-param = {'model_name'        : 'UKESM1-0-LL',
+param = {'model_name'        : argv[1],
          'scenarios'         : ['SSP245',
                                 'SSP585'],
 
          'release_start_day' : 80,
          'release_end_day'   : 100,
          'number_of_releases': 3,
-         'terns_per_release' : 5,
+         'terns_per_release' : 400,
          'release_lat'       : -70.,
          'release_lon_range' : [-50., -10.],       # [min, max]
          'target_lat'        : 60.,
@@ -36,13 +33,19 @@ param = {'model_name'        : 'UKESM1-0-LL',
          'fly_frac'          : 0.6,                # Fraction of day in flight
          'mode'              : 'traj'   ,          # See notes below
          'parcels_dt'        : timedelta(hours=1), # Parcels solver dt
-         'out_dt'            : timedelta(hours=1),  # Only used if mode == traj
+         'out_dt'            : timedelta(hours=12),  # Only used if mode == traj
          'var_name'          : ['uas', 'vas'],     # [zonal, meridional]
          'coordinate_name'   : ['lon', 'lat'],     # [lon, lat]
 
          'debug'             : False,              # Toggle to skip simulations
          'first_sim'         : 1                   # Only used if debug == True
          }
+
+dirs  = {'script': os.path.dirname(os.path.realpath(__file__)),
+         'model': os.path.dirname(os.path.realpath(__file__)) + '/MODEL_DATA/' + param['model_name'] + '/',
+         'traj': os.path.dirname(os.path.realpath(__file__)) + '/TRAJ_DATA/'}
+
+
 
 # MODE NOTES:
 # 'traj' : Full trajectory is recorded
@@ -106,11 +109,11 @@ with Dataset(fh['u_hist'], mode='r') as nc:
                                      month = 1,
                                      day   = 1)).total_seconds()
 
-    param['run_time'] = {'hist' : (param['Yend']['hist'] -
+    param['endtime'] = {'hist' : (param['Yend']['hist'] -
                                    param['Ystart']['hist'] + 1)}
-    param['run_time']['hist'] *= 3600*24*360
-    param['run_time']['hist'] -= 4*param['time_offset']
-    param['run_time']['hist'] = timedelta(seconds=param['run_time']['hist'])
+    param['endtime']['hist'] *= 3600*24*360
+    param['endtime']['hist'] -= 4*param['time_offset']
+    param['endtime']['hist'] = timedelta(seconds=param['endtime']['hist']).total_seconds()
 
 with Dataset(fh['u_scen'][0], mode='r') as nc:
     param['Ystart']['scen'] = num2date(nc.variables['time'][0],
@@ -121,11 +124,11 @@ with Dataset(fh['u_scen'][0], mode='r') as nc:
                                        nc.variables['time'].units,
                                        calendar=param['calendar']).year
 
-    param['run_time']['scen'] = (param['Yend']['scen'] -
+    param['endtime']['scen'] = (param['Yend']['scen'] -
                                  param['Ystart']['scen'] + 1)
-    param['run_time']['scen'] *= 3600*24*360
-    param['run_time']['scen'] -= 4*param['time_offset']
-    param['run_time']['scen'] = timedelta(seconds=param['run_time']['scen'])
+    param['endtime']['scen'] *= 3600*24*360
+    param['endtime']['scen'] -= 4*param['time_offset']
+    param['endtime']['scen'] = timedelta(seconds=param['endtime']['scen']).total_seconds()
 
 release = tm.prepare_release(release, param)
 
@@ -141,8 +144,10 @@ fly_field = tm.genTargetField(param['target_lon'],
 ##############################################################################
 
 class ArcticTern(JITParticle):
-    flight_time = Variable('flight_time', dtype=np.float32, initial=0.)
-    release_time = Variable('release_time', dtype=np.int32, initial=0.)
+    flight_time = Variable('flight_time', dtype=np.float32, initial=0.,
+                           to_write='once')
+    release_time = Variable('release_time', dtype=np.int32, initial=0.,
+                            to_write='once')
     time_of_day = Variable('time_of_day', dtype=np.float32, initial=0.,
                            to_write=False)
 
@@ -261,17 +266,15 @@ for i in range(param['first_sim'], param['n_scen'] + 1):
     Kernels = (pset.Kernel(AdvectionRK4Tern) +
                pset.Kernel(TernTools))
 
-    param['run_time']['hist'] = 86400
-
     if i == 0:
         pset.execute(Kernels,
-                     runtime=param['run_time']['hist'],
+                     endtime=param['endtime']['hist'],
                      dt = param['parcels_dt'],
-                     #recovery={ErrorCode.ErrorOutOfBounds: DeleteParticle},
+                     recovery={ErrorCode.ErrorOutOfBounds: DeleteParticle},
                      output_file=traj_file)
     else:
         pset.execute(Kernels,
-                     runtime=param['run_time']['scen'],
+                     endtime=param['endtime']['scen'],
                      dt = param['parcels_dt'],
                      recovery={ErrorCode.ErrorOutOfBounds: DeleteParticle},
                      output_file=traj_file)
@@ -292,6 +295,4 @@ for i in range(param['first_sim'], param['n_scen'] + 1):
         print('The terns will miss you!')
 
     from parcels import plotTrajectoriesFile
-
-    plotTrajectoriesFile(traj_fh)
 
